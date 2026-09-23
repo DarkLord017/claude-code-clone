@@ -1,0 +1,54 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import Enum
+
+
+class EventType(str, Enum):
+    TEXT_DELTA = "text_delta"
+    MESSAGE_COMPLETE = "message_complete"
+    ERROR = "error"
+
+
+@dataclass
+class TextDelta:
+    content: str
+
+    def __str__(self):
+        return self.content
+
+
+@dataclass
+class ToolCall:
+    id: str
+    name: str
+    arguments: str  # raw JSON string; caller is responsible for json.loads()
+
+
+@dataclass
+class TokenUsage:
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cached_tokens: int = 0
+
+    def __add__(self, other: TokenUsage) -> TokenUsage:
+        return TokenUsage(
+            prompt_tokens=self.prompt_tokens + other.prompt_tokens,
+            completion_tokens=self.completion_tokens + other.completion_tokens,
+            total_tokens=self.total_tokens + other.total_tokens,
+            cached_tokens=self.cached_tokens + other.cached_tokens,
+        )
+
+
+@dataclass
+class StreamEvent:
+    """
+    Represents a single event in a streaming response.
+    """
+    type: EventType
+    text_delta: TextDelta | None = None
+    tool_calls: list[ToolCall] | None = None
+    error_message: str | None = None
+    finish_reason: str | None = None
+    usage: TokenUsage | None = None
