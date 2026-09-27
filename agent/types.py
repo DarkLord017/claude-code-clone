@@ -27,6 +27,10 @@ class AgentEventType(str, Enum):
     # context management events
     CONTEXT_COMPACTED = "context_compacted"
 
+    # background subagent events
+    SUBAGENT_STARTED = "subagent_started"
+    SUBAGENT_COMPLETED = "subagent_completed"
+
 
 @dataclass
 class AgentEvent:
@@ -109,4 +113,18 @@ class AgentEvent:
         return cls(
             type=AgentEventType.CONTEXT_COMPACTED,
             data={"messages_removed": messages_removed, "summary": summary},
+        )
+
+    @classmethod
+    def subagent_started(cls, task_id: str, task: str) -> AgentEvent:
+        return cls(
+            type=AgentEventType.SUBAGENT_STARTED,
+            data={"task_id": task_id, "task": task},
+        )
+
+    @classmethod
+    def subagent_completed(cls, task_id: str, success: bool, output: str) -> AgentEvent:
+        return cls(
+            type=AgentEventType.SUBAGENT_COMPLETED,
+            data={"task_id": task_id, "success": success, "output": output},
         )

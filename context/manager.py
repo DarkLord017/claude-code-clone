@@ -58,6 +58,11 @@ class ContextManager:
         """The result of one tool call, matched back to the request via tool_call_id."""
         self._add_message({"role": "tool", "tool_call_id": tool_call_id, "content": content})
 
+    def add_system_notice(self, content: str) -> None:
+        """An injected note attributed to neither the user nor the assistant — e.g. a
+        background subagent finishing. Same role used for the compaction summary."""
+        self._add_message({"role": "system", "content": content})
+
     def _add_message(self, message: Message) -> None:
         self._messages.append(message)
         content = message.get("content")

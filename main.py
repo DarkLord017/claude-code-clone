@@ -4,6 +4,12 @@ import asyncio
 from pathlib import Path
 
 import click
+from dotenv import load_dotenv
+
+# Load from the project's own .env, not whatever the shell's cwd happens to be —
+# this must run before anything reads OPENAI_API_KEY/LANGSEARCH_API_KEY, regardless
+# of --cwd or where the command is invoked from.
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 from agent import Agent, AgentEventType
 from config.loader import build_config
@@ -23,6 +29,7 @@ class CLI:
             cwd=self.config.cwd,
             config=self.config,
             on_confirm=self.tui.confirm_tool,
+            on_subagent_event=self.tui.print_subagent_event,
         )
 
     async def run_single(self, prompt: str) -> None:
@@ -33,19 +40,31 @@ class CLI:
         self.tui.console.print(
             "[accent]Claude Code (clone)[/accent] — type a message, or Ctrl+D to exit.\n"
         )
-        async with self._build_agent() as agent:
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def reader() -> None:
             while True:
                 try:
-                    message = self.tui.console.input("[user]>[/user] ")
+                    # Same reason as before: input() must never run on the event loop's own
+                    # thread, or nothing else (agent turns, subagents) can make progress.
+                    message = await asyncio.to_thread(self.tui.console.input, "[user]>[/user] ")
                 except (EOFError, KeyboardInterrupt):
                     self.tui.console.print()
-                    break
+                    await queue.put(None)  # sentinel: tells the runner to stop too
+                    return
+                if message.strip():
+                    await queue.put(message)
 
-                if not message.strip():
-                    continue
-
+        async def runner(agent: Agent) -> None:
+            while True:
+                message = await queue.get()
+                if message is None:
+                    return
                 await self._process_message(agent, message)
                 self.tui.console.print()
+
+        async with self._build_agent() as agent:
+            await asyncio.gather(reader(), runner(agent))
 
     async def _process_message(self, agent: Agent, message: str) -> None:
         async for event in agent.run(message=message):
@@ -66,6 +85,12 @@ class CLI:
                     success=event.data["success"],
                     output=event.data["output"],
                     error=event.data["error"],
+                )
+            elif event.type == AgentEventType.SUBAGENT_COMPLETED:
+                self.tui.print_subagent_completed(
+                    task_id=event.data["task_id"],
+                    success=event.data["success"],
+                    output=event.data["output"],
                 )
             elif event.type == AgentEventType.CONTEXT_COMPACTED:
                 self.tui.print_context_compacted(

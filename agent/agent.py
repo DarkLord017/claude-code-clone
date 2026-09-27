@@ -14,6 +14,7 @@ from context.types import Message
 from prompts.system import get_compression_prompt
 from tools.builtin import create_default_registry
 from tools.builtin.compact_context import CompactContextTool
+from tools.builtin.subagent import OnSubagentEvent, SubagentTool
 from tools.registry import ToolRegistry
 from tools.types import ToolConfirmation, ToolInvocation, ToolResult
 from utils.logging import get_logger
@@ -31,26 +32,41 @@ class Agent:
         cwd: Path | None = None,
         on_confirm: ConfirmCallback | None = None,
         config: Config | None = None,
+        auto_fill_tools: bool = True,
+        on_subagent_event: OnSubagentEvent | None = None,
     ) -> None:
         self._client = LLMClient()
         self._config = config or Config()
         self._model_name = model_name
         self._cwd = cwd or Path.cwd()
         self._on_confirm = on_confirm
+        self._on_subagent_event = on_subagent_event
 
-        # Build the full tool registry BEFORE ContextManager, so its system prompt can list every
-        # tool from the start. compact_context needs a live ContextManager, which doesn't exist yet
-        # at this point — so it's given a lazy getter instead of the object itself, resolved only
-        # when the tool actually runs (long after __init__ has finished).
         self._registry = create_default_registry(
             config=self._config,
             get_context_manager=lambda: self._context_manager,
             summarize=self._summarize,
             registry=registry,
+            auto_fill=auto_fill_tools,
+            get_parent_registry=lambda: self._registry,
+            build_subagent=self._build_subagent,
+            on_subagent_event=self._on_subagent_event,
         )
 
         self._context_manager = ContextManager(
             model_name=model_name, config=self._config, tools=self._registry.list_tools()
+        )
+
+    def _build_subagent(self, task: str, scoped_registry: ToolRegistry, model: str | None) -> "Agent":
+        logger.info("Spawning subagent for task: %s", task[:80])
+        return Agent(
+            model_name=model or self._model_name,
+            registry=scoped_registry,
+            auto_fill_tools=False,
+            cwd=self._cwd,
+            config=self._config,
+            on_confirm=self._on_confirm,
+            on_subagent_event=self._on_subagent_event,
         )
 
     async def _request_approval(self, confirmation: ToolConfirmation) -> bool:
@@ -75,6 +91,9 @@ class Agent:
 
     async def _agentic_loop(self) -> AsyncGenerator[AgentEvent, None]:
         for _ in range(self.MAX_TOOL_ITERATIONS):
+            async for subagent_event in self._check_subagents():
+                yield subagent_event
+
             response_text = ""
             tool_calls: list[ToolCall] = []
 
@@ -148,6 +167,21 @@ class Agent:
 
         logger.warning("Stopped after %d tool iterations without a final answer", self.MAX_TOOL_ITERATIONS)
         yield AgentEvent.agent_error(error=errors.tool_iteration_limit_reached(self.MAX_TOOL_ITERATIONS))
+
+    async def _check_subagents(self) -> AsyncGenerator[AgentEvent, None]:
+        """Surface any background subagents that finished since the last check — injects a
+        notification into the conversation so the next LLM call sees it, and yields an event
+        so the UI shows it immediately, before whatever this loop does next."""
+        subagent_tool = self._registry.get(SubagentTool.name)
+        if subagent_tool is None:
+            return
+
+        for task_id, result in subagent_tool.pop_completed():
+            status = "finished" if result.success else "failed"
+            content = result.output if result.success else (result.error or "no result")
+            logger.info("Subagent '%s' %s", task_id, status)
+            self._context_manager.add_system_notice(f"[Subagent '{task_id}' {status}]\n{content}")
+            yield AgentEvent.subagent_completed(task_id=task_id, success=result.success, output=content)
 
     async def _compact(self) -> AsyncGenerator[AgentEvent, None]:
         """Automatic safety-net trigger — runs the compact_context tool directly, bypassing
