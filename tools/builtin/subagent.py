@@ -14,8 +14,7 @@ if TYPE_CHECKING:
     from agent.agent import Agent
     from agent.types import AgentEvent
 
-# (task, scoped registry, model override) -> a freshly built, isolated Agent
-BuildSubagent = Callable[[str, ToolRegistry, Optional[str]], "Agent"]
+BuildSubagent = Callable[[str, ToolRegistry], "Agent"]
 # (task, event) -> None — called for every event the subagent produces, for live progress
 OnSubagentEvent = Callable[[str, "AgentEvent"], None]
 GetParentRegistry = Callable[[], ToolRegistry]
@@ -31,10 +30,11 @@ class SubagentParams(BaseModel):
     )
     allowed_tools: List[str] = Field(
         ...,
-        description="Exact tool names to grant the subagent, e.g. ['read_file', 'search']. It gets nothing else.",
-    )
-    model: Optional[str] = Field(
-        None, description="Model override for the subagent. Defaults to the main agent's model."
+        description=(
+            "Bare tool names to grant the subagent, exactly as registered — e.g. "
+            "['read_file', 'search']. Do NOT prefix them with 'functions.' or anything else "
+            "(not 'functions.read_file' — just 'read_file'). It gets nothing else."
+        ),
     )
 
 
@@ -77,16 +77,17 @@ class SubagentTool(Tool):
         parent_registry = self._get_parent_registry()
 
         scoped = ToolRegistry()
-        for tool_name in params.allowed_tools:
+        for raw_name in params.allowed_tools:
+            tool_name = raw_name.rsplit(".", 1)[-1]
             tool = parent_registry.get(tool_name)
             if tool is None:
                 return ToolResult.error_result(
-                    f"Unknown tool for subagent: '{tool_name}'. It must be one of the "
-                    f"parent agent's own registered tools."
+                    f"Unknown tool for subagent: '{raw_name}'. It must be one of the "
+                    f"parent agent's own registered tools (bare name, no prefix)."
                 )
             scoped.register(tool)
 
-        subagent = self._build_subagent(params.task, scoped, params.model)
+        subagent = self._build_subagent(params.task, scoped)
         task_id = uuid.uuid4().hex[:8]
 
         self._tasks[task_id] = asyncio.create_task(self._run(task_id, subagent, params.task))

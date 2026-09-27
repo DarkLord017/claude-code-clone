@@ -27,6 +27,9 @@ class ToolConfirmation:
     tool_name: str
     params: dict[str, Any]
     description: str
+    # None means the request comes from the main agent. Set to a subagent's task description
+    # when it comes from a background subagent instead, so the UI can say who's asking.
+    source: str | None = None
 
 
 @dataclass

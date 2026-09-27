@@ -5,17 +5,12 @@ from pathlib import Path
 
 import click
 from dotenv import load_dotenv
-
-# Load from the project's own .env, not whatever the shell's cwd happens to be —
-# this must run before anything reads OPENAI_API_KEY/LANGSEARCH_API_KEY, regardless
-# of --cwd or where the command is invoked from.
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 from agent import Agent, AgentEventType
 from config.loader import build_config
 from config.types import Config
 from ui.tui import TUI, get_console
-
 
 class CLI:
     def __init__(self, model: str, config: Config) -> None:
@@ -45,13 +40,14 @@ class CLI:
         async def reader() -> None:
             while True:
                 try:
-                    # Same reason as before: input() must never run on the event loop's own
-                    # thread, or nothing else (agent turns, subagents) can make progress.
-                    message = await asyncio.to_thread(self.tui.console.input, "[user]>[/user] ")
+                    message = await self.tui.read_line("> ")
                 except (EOFError, KeyboardInterrupt):
                     self.tui.console.print()
+                    self.tui.cancel_pending_confirmations()
                     await queue.put(None)  # sentinel: tells the runner to stop too
                     return
+                if message.strip() and self.tui.resolve_pending_confirmation(message):
+                    continue
                 if message.strip():
                     await queue.put(message)
 

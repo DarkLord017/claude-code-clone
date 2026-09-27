@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import AsyncGenerator
 
@@ -34,6 +35,7 @@ class Agent:
         config: Config | None = None,
         auto_fill_tools: bool = True,
         on_subagent_event: OnSubagentEvent | None = None,
+        subagent_label: str | None = None,
     ) -> None:
         self._client = LLMClient()
         self._config = config or Config()
@@ -41,6 +43,9 @@ class Agent:
         self._cwd = cwd or Path.cwd()
         self._on_confirm = on_confirm
         self._on_subagent_event = on_subagent_event
+        # None for the main agent; a subagent's own task description otherwise — lets the
+        # approval prompt say *who* is asking, since subagents share the same on_confirm.
+        self._subagent_label = subagent_label
 
         self._registry = create_default_registry(
             config=self._config,
@@ -57,16 +62,20 @@ class Agent:
             model_name=model_name, config=self._config, tools=self._registry.list_tools()
         )
 
-    def _build_subagent(self, task: str, scoped_registry: ToolRegistry, model: str | None) -> "Agent":
+    def _build_subagent(self, task: str, scoped_registry: ToolRegistry) -> "Agent":
+        """Always uses the main agent's own model — no LLM-controlled override. An LLM-supplied
+        model string can't be trusted to be a real, valid model ID (this crashed a subagent
+        once with 'text-davinci-003 is not a valid model ID' when the LLM guessed one)."""
         logger.info("Spawning subagent for task: %s", task[:80])
         return Agent(
-            model_name=model or self._model_name,
+            model_name=self._model_name,
             registry=scoped_registry,
             auto_fill_tools=False,
             cwd=self._cwd,
             config=self._config,
             on_confirm=self._on_confirm,
             on_subagent_event=self._on_subagent_event,
+            subagent_label=task,
         )
 
     async def _request_approval(self, confirmation: ToolConfirmation) -> bool:
@@ -74,6 +83,8 @@ class Agent:
         if self._on_confirm is None:
             logger.info("No confirmation handler configured — denying '%s' by default", confirmation.tool_name)
             return False
+        if self._subagent_label is not None:
+            confirmation = replace(confirmation, source=self._subagent_label)
         return await self._on_confirm(confirmation)
 
     async def run(self, message: str):
